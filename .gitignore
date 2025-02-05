@@ -1,2 +1,2 @@
-backend/server.crt
-backend/server.key
+backend/cert.pem
+backend/key.pem
