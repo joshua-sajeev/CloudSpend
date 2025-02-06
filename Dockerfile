@@ -1,26 +1,17 @@
-# syntax=docker/dockerfile:1
+FROM golang:1.23-alpine AS build
 
-FROM golang:latest
-
-# Install vim and nano
-# RUN apt-get update && apt-get install -y vim nano
-
-# Set destination for COPY
 WORKDIR /app
-ADD . /app
 
-RUN go install github.com/air-verse/air@latest
-
-COPY go.* ./
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 
-# Build
-RUN CGO_ENABLED=0 GOOS=linux go build -o /cloud-spend
+RUN go build -o main cmd/api/main.go
 
-# Expose port 8080 for the app
-EXPOSE 8080
-
-# Run the app using 'air'
-CMD [ "air" ,"-c",".air.toml"]
+FROM alpine:3.20.1 AS prod
+WORKDIR /app
+COPY --from=build /app/main /app/main
+ENV PORT=8080
+EXPOSE ${PORT}
+CMD ["./main"]

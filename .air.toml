@@ -1,7 +1,7 @@
 # Config file for Air
 [build]
 # Command to build the app
-cmd = "go build -o main main.go"
+cmd = "go build -o main cmd/api/main.go"
 # Binary to watch
 bin = "main"
 # Working directory 

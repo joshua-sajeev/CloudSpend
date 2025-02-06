@@ -47,11 +47,11 @@ func main() {
 	go gracefulShutdown(server, done)
 
 	fmt.Printf("Started listening on port %d\n", port)
+
 	err := server.ListenAndServe()
 	if err != nil && err != http.ErrServerClosed {
 		panic(fmt.Sprintf("http server error: %s", err))
 	}
-
 	// Wait for the graceful shutdown to complete
 	<-done
 	log.Println("Graceful shutdown complete.")
