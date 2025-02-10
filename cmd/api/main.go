@@ -2,57 +2,52 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
-	"syscall"
 	"time"
 
-	"cloudspend-backend/internal/server"
+	"cloudspend/internal/database"
+	"cloudspend/internal/server"
 )
 
-func gracefulShutdown(apiServer *http.Server, done chan bool) {
-	// Create context that listens for the interrupt signal from the OS.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+func main() {
+	// Initialize Database
+	db := database.ConnectDB()
+	defer database.CloseDB(db)
 
-	// Listen for the interrupt signal.
-	<-ctx.Done()
+	// Start HTTP server
+	router := server.SetupRouter(db)
+	serverAddr := ":8080"
 
-	log.Println("shutting down gracefully, press Ctrl+C again to force")
+	srv := &http.Server{
+		Addr:    serverAddr,
+		Handler: router,
+	}
 
-	// The context is used to inform the server it has 5 seconds to finish
-	// the request it is currently handling
+	// Channel to listen for interrupt signals
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, os.Kill)
+
+	go func() {
+		log.Println("Server running on", serverAddr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+
+	// Wait for shutdown signal
+	<-quit
+	log.Println("Shutting down server...")
+
+	// Give 5 seconds to close existing connections
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := apiServer.Shutdown(ctx); err != nil {
-		log.Printf("Server forced to shutdown with error: %v", err)
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
 	}
 
-	log.Println("Server exiting")
-
-	// Notify the main goroutine that the shutdown is complete
-	done <- true
-}
-
-func main() {
-
-	server, port := server.NewServer()
-
-	// Create a done channel to signal when the shutdown is complete
-	done := make(chan bool, 1)
-
-	// Run graceful shutdown in a separate goroutine
-	go gracefulShutdown(server, done)
-
-	fmt.Printf("Started listening on port %d\n", port)
-
-	err := server.ListenAndServe()
-	if err != nil && err != http.ErrServerClosed {
-		panic(fmt.Sprintf("http server error: %s", err))
-	}
-	// Wait for the graceful shutdown to complete
-	<-done
-	log.Println("Graceful shutdown complete.")
+	log.Println("Server exited properly")
 }

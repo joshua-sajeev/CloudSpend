@@ -1,80 +1,115 @@
 package database
 
 import (
+	"cloudspend/internal/config"
+	"cloudspend/internal/models"
 	"database/sql"
 	"fmt"
+	_ "github.com/lib/pq" // PostgreSQL driver
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 	"log"
-	"os"
-	"sync"
 	"time"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/joho/godotenv"
-	_ "github.com/joho/godotenv/autoload"
 )
 
-type Service interface {
-	Close() error
-}
+var DB *gorm.DB
 
-type service struct {
-	db *sql.DB
-}
+func ConnectDB() *gorm.DB {
+	cfg := config.LoadConfig()
 
-var (
-	dbInstance *service
-	once       sync.Once
-)
-
-func New() Service {
-	once.Do(func() {
-		// Load .env file explicitly
-		if err := godotenv.Load(); err != nil {
-			log.Println("Warning: No .env file found or unable to load it")
-		}
-
-		// Read environment variables
-		dbUser := os.Getenv("DBUSER")
-		dbPassword := os.Getenv("PASSWORD")
-		dbHost := os.Getenv("HOST")
-		dbPort := os.Getenv("DBPORT")
-		dbName := os.Getenv("DBNAME")
-
-		// Debugging: Print environment variables to check
-		fmt.Printf("DB Config: USER=%s, PASSWORD=%s, HOST=%s, DBPORT=%s, DBNAME=%s\n",
-			dbUser, dbPassword, dbHost, dbPort, dbName)
-
-		// Construct connection string
-		connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
-			dbUser, dbPassword, dbHost, dbPort, dbName,
-		)
-
-		// Open database connection
-		db, err := sql.Open("pgx", connStr)
-		if err != nil {
-			log.Fatalf("Failed to connect to database: %v", err)
-		}
-
-		// Assign the instance
-		dbInstance = &service{db: db}
-	})
-
-	return dbInstance
-}
-func AddTransaction(category, title, transactionType string, amount float64, date time.Time) error {
-	query := `INSERT INTO transactions (category, title, type, amount, date) VALUES ($1, $2, $3, $4, $5)`
-
-	_, err := dbInstance.db.Exec(query, category, title, transactionType, amount, date)
-	if err != nil {
-		log.Printf("Failed to insert transaction: %s", err)
-		return fmt.Errorf("failed to insert transaction: %w", err)
+	// Create database if it doesn't exist
+	if err := createDatabaseIfNotExists(cfg); err != nil {
+		log.Fatal("Failed to create/verify database:", err)
 	}
 
-	log.Println("Transaction inserted successfully")
+	// Add retry logic for database connection
+	var db *gorm.DB
+	var err error
+	maxRetries := 5
+
+	for i := 0; i < maxRetries; i++ {
+		db, err = connectToDatabase(cfg)
+		if err == nil {
+			break
+		}
+		log.Printf("Failed to connect to database (attempt %d/%d): %v", i+1, maxRetries, err)
+		time.Sleep(time.Second * 2) // Wait before retrying
+	}
+
+	if err != nil {
+		log.Fatal("Failed to connect to database after multiple attempts:", err)
+	}
+
+	log.Println("Successfully connected to database")
+
+	// AutoMigrate models
+	if err := db.AutoMigrate(&models.Transaction{}); err != nil {
+		log.Fatal("Failed to migrate database schema:", err)
+	}
+
+	DB = db
+	return db
+}
+
+func connectToDatabase(cfg config.Config) (*gorm.DB, error) {
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
+		cfg.DBHost, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBPort)
+
+	return gorm.Open(postgres.Open(dsn), &gorm.Config{})
+}
+
+func createDatabaseIfNotExists(cfg config.Config) error {
+	// Connect to PostgreSQL's default database
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=postgres port=%s sslmode=disable",
+		cfg.DBHost, cfg.DBUser, cfg.DBPassword, cfg.DBPort)
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
+	}
+	defer db.Close()
+
+	// Wait for PostgreSQL to be ready
+	for i := 0; i < 5; i++ {
+		if err := db.Ping(); err == nil {
+			break
+		}
+		log.Println("Waiting for PostgreSQL to be ready...")
+		time.Sleep(time.Second * 2)
+	}
+
+	// Check if database exists
+	var exists bool
+	query := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)")
+	err = db.QueryRow(query, cfg.DBName).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("error checking database existence: %w", err)
+	}
+
+	// Create database if it doesn't exist
+	if !exists {
+		// Important: Use parametrized query with Quote identifier to prevent SQL injection
+		_, err = db.Exec(fmt.Sprintf("CREATE DATABASE %s", QuoteIdentifier(cfg.DBName)))
+		if err != nil {
+			return fmt.Errorf("error creating database: %w", err)
+		}
+		log.Println("Database created successfully")
+	} else {
+		log.Println("Database already exists")
+	}
+
 	return nil
 }
 
-func (s *service) Close() error {
-	log.Printf("Disconnected from database")
-	return s.db.Close()
+// QuoteIdentifier properly quotes database identifiers to prevent SQL injection
+func QuoteIdentifier(name string) string {
+	return fmt.Sprintf("\"%s\"", name)
+}
+func CloseDB(db *gorm.DB) {
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Println("Error getting database instance:", err)
+		return
+	}
+	sqlDB.Close()
 }

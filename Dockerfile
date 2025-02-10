@@ -1,17 +1,21 @@
-FROM golang:1.23-alpine AS build
+# Use official Golang image
+FROM golang:latest
 
+# Install Air for hot-reloading
+RUN go install github.com/air-verse/air@v1.61.7
+
+# Set working directory
 WORKDIR /app
 
+# Copy go modules and install dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
+# Copy the rest of the application
 COPY . .
 
-RUN go build -o main cmd/api/main.go
+# Expose the application port
+EXPOSE 8080
 
-FROM alpine:3.20.1 AS prod
-WORKDIR /app
-COPY --from=build /app/main /app/main
-ENV PORT=8080
-EXPOSE ${PORT}
-CMD ["./main"]
+# Command to start Air
+CMD ["air", "-c", ".air.toml"]
